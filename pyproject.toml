@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "document-compare"
+version = "1.0.0"
+description = "Document comparison (redlining) library for Word and PDF documents"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Valon Technologies"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Legal Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business",
+    "Topic :: Text Processing :: General",
+]
+dependencies = [
+    "python-docx>=0.8.11",
+    "pymupdf>=1.23.0",
+    "reportlab>=4.0.0",
+    "lxml>=4.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/zjamron/DocumentCompare"
+Repository = "https://github.com/zjamron/DocumentCompare"
+
+[project.scripts]
+document-compare = "document_compare:main"
+doccompare = "document_compare:main"
+
+[tool.setuptools.packages.find]
+where = ["samples"]
+
+[tool.setuptools.package-dir]
+"" = "samples"
