@@ -41,3 +41,7 @@ Thumbs.db
 
 # Sample output files (regenerate with python scripts)
 samples/*.docx
+
+# Python cache
+__pycache__/
+*.pyc
