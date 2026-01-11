@@ -11,9 +11,11 @@ A document comparison (redlining) library that compares two documents and genera
 - **Visual redlining**:
   - Deletions shown in **red with strikethrough**
   - Insertions shown in **blue bold**
+  - Moved text shown in **green** (strikethrough at source, plain at destination)
 - **Word-level diff** - Precise change detection at the word level
 - **Paragraph alignment** - Intelligently matches paragraphs between documents
 - **Header/footer comparison** - Compares headers and footers across document sections
+- **Move detection** - Detects text that was moved (not just deleted and re-inserted)
 
 ## Quick Start (Python)
 
@@ -48,7 +50,7 @@ result = compare_documents(
     output_path="contract_redline.pdf"
 )
 
-print(f"Insertions: {result.insertions}, Deletions: {result.deletions}")
+print(f"Insertions: {result.insertions}, Deletions: {result.deletions}, Moves: {result.moves}")
 ```
 
 ## Supported Formats
@@ -85,13 +87,14 @@ DocumentCompare/
 |-------------|------------|
 | Deleted text | Red + Strikethrough |
 | Inserted text | Blue + Bold |
-| Moved text | Green (Phase 3) |
+| Moved text (source) | Green + Strikethrough |
+| Moved text (destination) | Green |
 
 ## Roadmap
 
 - [x] **Phase 1**: Word-to-Word comparison with formatting preservation
 - [x] **Phase 2**: PDF support (input and output)
-- [ ] **Phase 3**: Move detection (green highlighting)
+- [x] **Phase 3**: Move detection (green highlighting)
 - [ ] **Phase 4**: Table cell-level comparison
 
 ## Dependencies

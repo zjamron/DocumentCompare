@@ -5,6 +5,7 @@ Strategy:
 1. Copy the MODIFIED document as the base (keeps all formatting intact)
 2. For each paragraph, find what was deleted and insert it with strikethrough
 3. Mark inserted text with blue bold
+4. Detect moved text and show in green (source struck through, destination plain green)
 """
 import difflib
 import re
@@ -16,9 +17,26 @@ from docx.oxml import OxmlElement
 from lxml import etree
 import os
 import shutil
+from typing import List, Tuple, Dict, Optional
+from dataclasses import dataclass
 
 # Word XML namespaces
 WORD_NS = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+
+# Move detection threshold - text must be this similar to be considered a move
+MOVE_SIMILARITY_THRESHOLD = 0.85
+
+# Minimum word count for move detection (very short phrases are likely coincidental)
+MIN_MOVE_WORDS = 3
+
+
+@dataclass
+class MoveCandidate:
+    """Represents a potential moved text block."""
+    text: str
+    paragraph_idx: int
+    is_deletion: bool  # True if from original (deletion), False if from modified (insertion)
+    word_count: int
 
 def get_paragraph_text(para):
     """Get plain text from a paragraph."""
@@ -126,6 +144,13 @@ def rebuild_paragraph_with_diff(para, diff_segments, base_formatting=None):
         elif seg_type == 'insert':
             run.bold = True
             run.font.color.rgb = RGBColor(0, 0, 255)  # Blue
+        elif seg_type == 'move_source':
+            # Moved text at original location - green strikethrough
+            run.font.strike = True
+            run.font.color.rgb = RGBColor(0, 128, 0)  # Green
+        elif seg_type == 'move_dest':
+            # Moved text at new location - green (no strikethrough)
+            run.font.color.rgb = RGBColor(0, 128, 0)  # Green
         # 'equal' keeps normal formatting
 
 def apply_formatting_to_existing_runs(para, formatting_type):
@@ -137,6 +162,11 @@ def apply_formatting_to_existing_runs(para, formatting_type):
         elif formatting_type == 'insert':
             run.bold = True
             run.font.color.rgb = RGBColor(0, 0, 255)
+        elif formatting_type == 'move_source':
+            run.font.strike = True
+            run.font.color.rgb = RGBColor(0, 128, 0)  # Green
+        elif formatting_type == 'move_dest':
+            run.font.color.rgb = RGBColor(0, 128, 0)  # Green
 
 def calculate_similarity(text1, text2):
     """Calculate similarity between two texts using multiple methods."""
@@ -168,6 +198,123 @@ def calculate_similarity(text1, text2):
 
     # Use the higher of the two similarities
     return max(word_sim, seq_sim)
+
+
+def normalize_text_for_move(text: str) -> str:
+    """Normalize text for move detection comparison."""
+    # Lowercase, collapse whitespace, strip
+    text = text.lower().strip()
+    text = re.sub(r'\s+', ' ', text)
+    return text
+
+
+def detect_moves(deletions: List[MoveCandidate], insertions: List[MoveCandidate]) -> Dict[int, int]:
+    """
+    Detect moved text by matching deletions with insertions.
+
+    Returns a dict mapping deletion paragraph index to insertion paragraph index
+    for detected moves.
+    """
+    moves = {}  # deletion_idx -> insertion_idx
+    used_insertions = set()
+
+    # Sort by word count descending - match longer phrases first (more confident)
+    sorted_deletions = sorted(
+        [(i, d) for i, d in enumerate(deletions) if d.word_count >= MIN_MOVE_WORDS],
+        key=lambda x: x[1].word_count,
+        reverse=True
+    )
+
+    for del_list_idx, deletion in sorted_deletions:
+        del_normalized = normalize_text_for_move(deletion.text)
+        best_match = None
+        best_similarity = 0
+
+        for ins_list_idx, insertion in enumerate(insertions):
+            if ins_list_idx in used_insertions:
+                continue
+            if insertion.word_count < MIN_MOVE_WORDS:
+                continue
+
+            ins_normalized = normalize_text_for_move(insertion.text)
+
+            # Calculate similarity
+            similarity = calculate_similarity(del_normalized, ins_normalized)
+
+            if similarity >= MOVE_SIMILARITY_THRESHOLD and similarity > best_similarity:
+                best_similarity = similarity
+                best_match = ins_list_idx
+
+        if best_match is not None:
+            moves[deletion.paragraph_idx] = insertions[best_match].paragraph_idx
+            used_insertions.add(best_match)
+
+    return moves
+
+
+def detect_word_level_moves(diff_segments: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """
+    Detect moves within word-level diff segments.
+
+    Takes diff segments and identifies deletions that match insertions,
+    converting them to move_source/move_dest types.
+    """
+    # Collect deletions and insertions
+    deletions = []  # (index, text, normalized)
+    insertions = []  # (index, text, normalized)
+
+    for i, (text, seg_type) in enumerate(diff_segments):
+        words = len(text.split())
+        if seg_type == 'delete' and words >= MIN_MOVE_WORDS:
+            deletions.append((i, text, normalize_text_for_move(text)))
+        elif seg_type == 'insert' and words >= MIN_MOVE_WORDS:
+            insertions.append((i, text, normalize_text_for_move(text)))
+
+    if not deletions or not insertions:
+        return diff_segments
+
+    # Find matching moves
+    moves = {}  # deletion_idx -> insertion_idx
+    used_insertions = set()
+
+    # Sort deletions by word count descending
+    sorted_deletions = sorted(deletions, key=lambda x: len(x[1].split()), reverse=True)
+
+    for del_idx, del_text, del_norm in sorted_deletions:
+        best_match = None
+        best_similarity = 0
+
+        for ins_idx, ins_text, ins_norm in insertions:
+            if ins_idx in used_insertions:
+                continue
+
+            similarity = calculate_similarity(del_norm, ins_norm)
+
+            if similarity >= MOVE_SIMILARITY_THRESHOLD and similarity > best_similarity:
+                best_similarity = similarity
+                best_match = ins_idx
+
+        if best_match is not None:
+            moves[del_idx] = best_match
+            used_insertions.add(best_match)
+
+    if not moves:
+        return diff_segments
+
+    # Create new segments with move markers
+    result = []
+    for i, (text, seg_type) in enumerate(diff_segments):
+        if i in moves:
+            # This deletion is a move source
+            result.append((text, 'move_source'))
+        elif i in used_insertions:
+            # This insertion is a move destination
+            result.append((text, 'move_dest'))
+        else:
+            result.append((text, seg_type))
+
+    return result
+
 
 def align_paragraphs(orig_paras, mod_paras):
     """Align paragraphs between documents using LCS."""
@@ -210,9 +357,10 @@ def align_paragraphs(orig_paras, mod_paras):
     alignments.reverse()
     return alignments
 
-def compare_paragraphs_list(orig_paras, out_paras, stats, context=""):
+def compare_paragraphs_list(orig_paras, out_paras, stats, context="", detect_moves_flag=True):
     """
     Compare two lists of paragraphs and apply diff formatting.
+    Includes move detection at both paragraph and word level.
     """
     if not orig_paras and not out_paras:
         return
@@ -220,6 +368,42 @@ def compare_paragraphs_list(orig_paras, out_paras, stats, context=""):
     # Align paragraphs
     alignments = align_paragraphs(orig_paras, out_paras)
 
+    # First pass: collect deletions and insertions for paragraph-level move detection
+    if detect_moves_flag:
+        deletion_candidates = []
+        insertion_candidates = []
+
+        for orig_idx, mod_idx, align_type in alignments:
+            if align_type == 'delete' and orig_idx >= 0:
+                text = get_paragraph_text(orig_paras[orig_idx])
+                if text.strip():
+                    deletion_candidates.append(MoveCandidate(
+                        text=text,
+                        paragraph_idx=orig_idx,
+                        is_deletion=True,
+                        word_count=len(text.split())
+                    ))
+            elif align_type == 'insert' and mod_idx >= 0:
+                text = get_paragraph_text(out_paras[mod_idx])
+                if text.strip():
+                    insertion_candidates.append(MoveCandidate(
+                        text=text,
+                        paragraph_idx=mod_idx,
+                        is_deletion=False,
+                        word_count=len(text.split())
+                    ))
+
+        # Detect paragraph-level moves
+        para_moves = detect_moves(deletion_candidates, insertion_candidates)
+        # para_moves: orig_idx -> mod_idx
+
+        # Build reverse lookup: mod_idx -> orig_idx (for move destinations)
+        move_destinations = {v: k for k, v in para_moves.items()}
+    else:
+        para_moves = {}
+        move_destinations = {}
+
+    # Second pass: apply formatting
     for orig_idx, mod_idx, align_type in alignments:
         if align_type == 'match' and mod_idx >= 0 and orig_idx >= 0:
             orig_para = orig_paras[orig_idx]
@@ -236,6 +420,10 @@ def compare_paragraphs_list(orig_paras, out_paras, stats, context=""):
                 # Compute diff
                 diff_segments = diff_texts(orig_text, mod_text)
 
+                # Apply word-level move detection
+                if detect_moves_flag:
+                    diff_segments = detect_word_level_moves(diff_segments)
+
                 # Count changes
                 for text, seg_type in diff_segments:
                     words = len(text.split())
@@ -243,6 +431,8 @@ def compare_paragraphs_list(orig_paras, out_paras, stats, context=""):
                         stats['insertions'] += words
                     elif seg_type == 'delete':
                         stats['deletions'] += words
+                    elif seg_type in ('move_source', 'move_dest'):
+                        stats['moves'] += words
                     else:
                         stats['unchanged'] += words
 
@@ -255,14 +445,25 @@ def compare_paragraphs_list(orig_paras, out_paras, stats, context=""):
             out_para = out_paras[mod_idx]
             text = get_paragraph_text(out_para)
             if text.strip():
-                apply_formatting_to_existing_runs(out_para, 'insert')
-                stats['insertions'] += len(text.split())
+                # Check if this is a move destination
+                if mod_idx in move_destinations:
+                    apply_formatting_to_existing_runs(out_para, 'move_dest')
+                    stats['moves'] += len(text.split())
+                else:
+                    apply_formatting_to_existing_runs(out_para, 'insert')
+                    stats['insertions'] += len(text.split())
 
         elif align_type == 'delete' and orig_idx >= 0:
             orig_para = orig_paras[orig_idx]
             text = get_paragraph_text(orig_para)
             if text.strip():
-                stats['deletions'] += len(text.split())
+                # Check if this is a move source
+                if orig_idx in para_moves:
+                    stats['moves'] += len(text.split())
+                    # Note: We can't easily add the source to output doc since we're using
+                    # modified doc as base. The move will show at destination in green.
+                else:
+                    stats['deletions'] += len(text.split())
 
 
 def compare_with_full_formatting(original_path, modified_path, output_path):
@@ -280,7 +481,7 @@ def compare_with_full_formatting(original_path, modified_path, output_path):
     original_doc = Document(original_path)
     output_doc = Document(output_path)
 
-    stats = {'insertions': 0, 'deletions': 0, 'unchanged': 0}
+    stats = {'insertions': 0, 'deletions': 0, 'unchanged': 0, 'moves': 0}
 
     # Compare main body paragraphs
     orig_paras = list(original_doc.paragraphs)
@@ -383,4 +584,5 @@ if __name__ == '__main__':
     print(f"Output: {output}")
     print(f"Insertions (blue bold): {stats['insertions']} words")
     print(f"Deletions (red strikethrough): {stats['deletions']} words")
+    print(f"Moves (green): {stats['moves']} words")
     print(f"Unchanged: {stats['unchanged']} words")

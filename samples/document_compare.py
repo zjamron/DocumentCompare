@@ -6,6 +6,7 @@ Supports:
 - PDF to PDF comparison
 - Word to PDF comparison (and vice versa)
 - Output to Word or PDF format
+- Move detection (green highlighting)
 """
 
 import os
@@ -13,8 +14,12 @@ import sys
 import difflib
 import re
 import shutil
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
+
+# Move detection settings
+MOVE_SIMILARITY_THRESHOLD = 0.85
+MIN_MOVE_WORDS = 3
 
 # Import Word support
 from docx import Document
@@ -33,6 +38,7 @@ class ComparisonResult:
     output_path: str
     insertions: int
     deletions: int
+    moves: int
     unchanged: int
     success: bool
     error: Optional[str] = None
@@ -118,6 +124,73 @@ def calculate_similarity(text1: str, text2: str) -> float:
     seq_sim = difflib.SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
 
     return max(word_sim, seq_sim)
+
+
+def normalize_text_for_move(text: str) -> str:
+    """Normalize text for move detection comparison."""
+    text = text.lower().strip()
+    text = re.sub(r'\s+', ' ', text)
+    return text
+
+
+def detect_word_level_moves(diff_segments: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """
+    Detect moves within word-level diff segments.
+    Converts delete/insert pairs to move_source/move_dest when text is similar.
+    """
+    # Collect deletions and insertions
+    deletions = []  # (index, text, normalized)
+    insertions = []  # (index, text, normalized)
+
+    for i, (text, seg_type) in enumerate(diff_segments):
+        words = len(text.split())
+        if seg_type == 'delete' and words >= MIN_MOVE_WORDS:
+            deletions.append((i, text, normalize_text_for_move(text)))
+        elif seg_type == 'insert' and words >= MIN_MOVE_WORDS:
+            insertions.append((i, text, normalize_text_for_move(text)))
+
+    if not deletions or not insertions:
+        return diff_segments
+
+    # Find matching moves
+    moves = {}  # deletion_idx -> insertion_idx
+    used_insertions = set()
+
+    # Sort deletions by word count descending
+    sorted_deletions = sorted(deletions, key=lambda x: len(x[1].split()), reverse=True)
+
+    for del_idx, del_text, del_norm in sorted_deletions:
+        best_match = None
+        best_similarity = 0
+
+        for ins_idx, ins_text, ins_norm in insertions:
+            if ins_idx in used_insertions:
+                continue
+
+            similarity = calculate_similarity(del_norm, ins_norm)
+
+            if similarity >= MOVE_SIMILARITY_THRESHOLD and similarity > best_similarity:
+                best_similarity = similarity
+                best_match = ins_idx
+
+        if best_match is not None:
+            moves[del_idx] = best_match
+            used_insertions.add(best_match)
+
+    if not moves:
+        return diff_segments
+
+    # Create new segments with move markers
+    result = []
+    for i, (text, seg_type) in enumerate(diff_segments):
+        if i in moves:
+            result.append((text, 'move_source'))
+        elif i in used_insertions:
+            result.append((text, 'move_dest'))
+        else:
+            result.append((text, seg_type))
+
+    return result
 
 
 def align_paragraphs(orig_texts: List[str], mod_texts: List[str]) -> List[Tuple[int, int, str]]:
@@ -228,8 +301,10 @@ def compare_documents(
         # Compute diffs
         print("Computing differences...")
         diff_results = []
-        stats = {'insertions': 0, 'deletions': 0, 'unchanged': 0}
+        stats = {'insertions': 0, 'deletions': 0, 'moves': 0, 'unchanged': 0}
 
+        # First pass: collect all diffs
+        temp_results = []
         for orig_idx, mod_idx, align_type in alignments:
             if align_type == 'match':
                 orig_text = orig_texts[orig_idx]
@@ -237,45 +312,92 @@ def compare_documents(
                 mod_meta = mod_paras[mod_idx][1]
 
                 if orig_text.strip() != mod_text.strip():
-                    # Compute word-level diff
                     segments = diff_texts(orig_text, mod_text)
+                    # Apply word-level move detection
+                    segments = detect_word_level_moves(segments)
                 else:
                     segments = [(mod_text, 'equal')]
 
-                # Count stats
-                for text, seg_type in segments:
-                    words = len(text.split())
-                    if seg_type == 'insert':
-                        stats['insertions'] += words
-                    elif seg_type == 'delete':
-                        stats['deletions'] += words
-                    else:
-                        stats['unchanged'] += words
-
-                diff_results.append({
+                temp_results.append({
                     'segments': segments,
-                    'is_heading': mod_meta.get('is_heading', False)
+                    'is_heading': mod_meta.get('is_heading', False),
+                    'align_type': 'match'
                 })
 
             elif align_type == 'insert':
                 mod_text = mod_texts[mod_idx]
                 mod_meta = mod_paras[mod_idx][1]
                 if mod_text.strip():
-                    diff_results.append({
+                    temp_results.append({
                         'segments': [(mod_text, 'insert')],
-                        'is_heading': mod_meta.get('is_heading', False)
+                        'is_heading': mod_meta.get('is_heading', False),
+                        'align_type': 'insert',
+                        'text': mod_text
                     })
-                    stats['insertions'] += len(mod_text.split())
 
             elif align_type == 'delete':
                 orig_text = orig_texts[orig_idx]
                 orig_meta = orig_paras[orig_idx][1]
                 if orig_text.strip():
-                    diff_results.append({
+                    temp_results.append({
                         'segments': [(orig_text, 'delete')],
-                        'is_heading': orig_meta.get('is_heading', False)
+                        'is_heading': orig_meta.get('is_heading', False),
+                        'align_type': 'delete',
+                        'text': orig_text
                     })
-                    stats['deletions'] += len(orig_text.split())
+
+        # Second pass: detect paragraph-level moves
+        deletions = [(i, r['text']) for i, r in enumerate(temp_results)
+                     if r.get('align_type') == 'delete' and len(r.get('text', '').split()) >= MIN_MOVE_WORDS]
+        insertions = [(i, r['text']) for i, r in enumerate(temp_results)
+                      if r.get('align_type') == 'insert' and len(r.get('text', '').split()) >= MIN_MOVE_WORDS]
+
+        para_moves = {}  # del_idx -> ins_idx
+        used_insertions = set()
+
+        for del_idx, del_text in sorted(deletions, key=lambda x: len(x[1].split()), reverse=True):
+            del_norm = normalize_text_for_move(del_text)
+            best_match = None
+            best_sim = 0
+
+            for ins_idx, ins_text in insertions:
+                if ins_idx in used_insertions:
+                    continue
+                ins_norm = normalize_text_for_move(ins_text)
+                sim = calculate_similarity(del_norm, ins_norm)
+                if sim >= MOVE_SIMILARITY_THRESHOLD and sim > best_sim:
+                    best_sim = sim
+                    best_match = ins_idx
+
+            if best_match is not None:
+                para_moves[del_idx] = best_match
+                used_insertions.add(best_match)
+
+        # Apply paragraph-level moves and build final results
+        for i, result in enumerate(temp_results):
+            if i in para_moves:
+                # This deletion is a move source
+                result['segments'] = [(result['text'], 'move_source')]
+            elif i in used_insertions:
+                # This insertion is a move destination
+                result['segments'] = [(result['text'], 'move_dest')]
+
+            # Count stats
+            for text, seg_type in result['segments']:
+                words = len(text.split())
+                if seg_type == 'insert':
+                    stats['insertions'] += words
+                elif seg_type == 'delete':
+                    stats['deletions'] += words
+                elif seg_type in ('move_source', 'move_dest'):
+                    stats['moves'] += words
+                else:
+                    stats['unchanged'] += words
+
+            diff_results.append({
+                'segments': result['segments'],
+                'is_heading': result.get('is_heading', False)
+            })
 
         # Generate output
         print(f"Generating {output_format} output...")
@@ -291,6 +413,7 @@ def compare_documents(
             output_path=output_path,
             insertions=stats['insertions'],
             deletions=stats['deletions'],
+            moves=stats['moves'],
             unchanged=stats['unchanged'],
             success=True
         )
@@ -302,6 +425,7 @@ def compare_documents(
             output_path=output_path,
             insertions=0,
             deletions=0,
+            moves=0,
             unchanged=0,
             success=False,
             error=str(e)
@@ -342,6 +466,11 @@ def generate_word_redline(diff_results: List[dict], output_path: str, base_doc_p
             elif seg_type == 'insert':
                 run.bold = True
                 run.font.color.rgb = RGBColor(0, 0, 255)  # Blue
+            elif seg_type == 'move_source':
+                run.font.strike = True
+                run.font.color.rgb = RGBColor(0, 128, 0)  # Green
+            elif seg_type == 'move_dest':
+                run.font.color.rgb = RGBColor(0, 128, 0)  # Green
 
     doc.save(output_path)
 
@@ -388,11 +517,12 @@ Examples:
         print(f"Output: {result.output_path}")
         print(f"Insertions (blue bold): {result.insertions} words")
         print(f"Deletions (red strikethrough): {result.deletions} words")
+        print(f"Moves (green): {result.moves} words")
         print(f"Unchanged: {result.unchanged} words")
 
-        total = result.insertions + result.deletions + result.unchanged
+        total = result.insertions + result.deletions + result.moves + result.unchanged
         if total > 0:
-            change_pct = (result.insertions + result.deletions) * 100 / total
+            change_pct = (result.insertions + result.deletions + result.moves) * 100 / total
             print(f"Change percentage: {change_pct:.1f}%")
     else:
         print("COMPARISON FAILED")

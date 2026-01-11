@@ -197,6 +197,16 @@ class PdfGenerator:
                     formatted_parts.append(
                         f'<font color="blue"><b>{escaped_text}</b></font>'
                     )
+                elif seg_type == 'move_source':
+                    # Green strikethrough (moved from here)
+                    formatted_parts.append(
+                        f'<font color="green"><strike>{escaped_text}</strike></font>'
+                    )
+                elif seg_type == 'move_dest':
+                    # Green (moved to here)
+                    formatted_parts.append(
+                        f'<font color="green">{escaped_text}</font>'
+                    )
                 else:
                     # Normal
                     formatted_parts.append(escaped_text)
