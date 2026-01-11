@@ -5,8 +5,10 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
-import subprocess
-import tempfile
+import threading
+
+# Import the comparison function directly
+from compare_preserve_formatting import compare_with_full_formatting
 
 
 class DocumentCompareGUI:
@@ -95,36 +97,33 @@ class DocumentCompareGUI:
         self.status_label.config(foreground="blue")
         self.root.update()
 
-        # Run comparison
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        script_path = os.path.join(script_dir, "compare_preserve_formatting.py")
+        # Store output path for use in callbacks
+        self.output_path = output_path
 
+        # Run comparison in a thread to keep UI responsive
+        thread = threading.Thread(target=self.run_comparison, args=(original, modified, output_path))
+        thread.start()
+
+    def run_comparison(self, original, modified, output_path):
+        """Run the comparison in a background thread."""
         try:
-            result = subprocess.run(
-                [sys.executable, script_path, original, modified, output_path],
-                capture_output=True,
-                text=True,
-                cwd=script_dir
-            )
-
-            if result.returncode != 0:
-                messagebox.showerror("Error", f"Comparison failed:\n{result.stderr}")
-                self.compare_btn.config(state="normal")
-                self.status_var.set("Comparison failed")
-                self.status_label.config(foreground="red")
-                return
-
-            # Open the output file
-            os.startfile(output_path)
-
-            # Close the app
-            self.root.quit()
-
+            compare_with_full_formatting(original, modified, output_path)
+            # Schedule UI update on main thread
+            self.root.after(0, lambda: self.finish_comparison(output_path))
         except Exception as e:
-            messagebox.showerror("Error", f"Error running comparison:\n{str(e)}")
-            self.compare_btn.config(state="normal")
-            self.status_var.set("Error occurred")
-            self.status_label.config(foreground="red")
+            self.root.after(0, lambda: self.handle_error(str(e)))
+
+    def finish_comparison(self, output_path):
+        """Open output file and close the app."""
+        os.startfile(output_path)
+        self.root.quit()
+
+    def handle_error(self, error_msg):
+        """Handle comparison error."""
+        messagebox.showerror("Error", f"Comparison failed:\n{error_msg}")
+        self.compare_btn.config(state="normal")
+        self.status_var.set("Comparison failed")
+        self.status_label.config(foreground="red")
 
 
 def main():

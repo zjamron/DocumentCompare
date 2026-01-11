@@ -45,3 +45,7 @@ samples/*.docx
 # Python cache
 __pycache__/
 *.pyc
+*.exe
+build/
+dist/
+*.spec
