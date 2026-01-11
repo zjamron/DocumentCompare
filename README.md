@@ -20,25 +20,39 @@ A document comparison (redlining) library that compares two documents and genera
 
 ## Quick Start (Python)
 
-### Universal Document Comparison (Word & PDF)
+### Recommended: Formatting-Preserving Comparison
+
+**Use this for legal documents, contracts, and any document where formatting matters:**
 
 ```bash
 cd samples
-pip install python-docx pymupdf reportlab
+pip install python-docx pymupdf reportlab lxml
 
+# Compare Word documents with full formatting preservation
+python compare_preserve_formatting.py original.docx modified.docx redline.docx
+```
+
+This script:
+- Preserves all original formatting (fonts, sizes, styles, headers/footers)
+- Copies the modified document as the base
+- Only adds redline markup (strikethrough, colors) to show changes
+- Supports table cell-level comparison
+- Detects moved text (shown in green)
+
+### Universal Comparison (Basic Formatting)
+
+**Use this only when formatting doesn't matter or for cross-format comparison:**
+
+```bash
 # Compare any combination of Word and PDF files
 python document_compare.py original.docx modified.docx redline.docx
 python document_compare.py original.pdf modified.pdf redline.pdf
 python document_compare.py original.docx modified.pdf redline.pdf
 ```
 
-### Word-to-Word with Formatting Preservation
-
-For Word documents where you need to preserve complex formatting:
-
-```bash
-python compare_preserve_formatting.py original.docx modified.docx redline.docx
-```
+> **Warning:** PDF output from this script creates a new document with generic styling.
+> Original formatting (fonts, sizes, complex layouts) will be lost. For formatting-critical
+> documents, use `compare_preserve_formatting.py` with Word output, then convert to PDF if needed.
 
 ### Python API
 
@@ -56,14 +70,16 @@ print(f"Insertions: {result.insertions}, Deletions: {result.deletions}, Moves: {
 
 ## Supported Formats
 
-| Input Format | Output Format | Script |
-|--------------|---------------|--------|
-| Word (.docx) | Word (.docx) | `compare_preserve_formatting.py` (best for complex docs) |
-| Word (.docx) | Word (.docx) | `document_compare.py` |
-| Word (.docx) | PDF (.pdf) | `document_compare.py` |
-| PDF (.pdf) | PDF (.pdf) | `document_compare.py` |
-| PDF (.pdf) | Word (.docx) | `document_compare.py` |
-| Word + PDF | Either | `document_compare.py` |
+| Input Format | Output Format | Script | Formatting |
+|--------------|---------------|--------|------------|
+| Word (.docx) | Word (.docx) | `compare_preserve_formatting.py` | **Full preservation** |
+| Word (.docx) | Word (.docx) | `document_compare.py` | Basic |
+| Word (.docx) | PDF (.pdf) | `document_compare.py` | Basic (not recommended) |
+| PDF (.pdf) | PDF (.pdf) | `document_compare.py` | Basic |
+| PDF (.pdf) | Word (.docx) | `document_compare.py` | Basic |
+| Word + PDF | Either | `document_compare.py` | Basic |
+
+**Recommendation:** For legal/contract documents, always use `compare_preserve_formatting.py` with Word output.
 
 ## Project Structure
 
