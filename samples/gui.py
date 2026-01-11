@@ -2,6 +2,8 @@
 
 import os
 import sys
+import subprocess
+import platform
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
@@ -115,7 +117,13 @@ class DocumentCompareGUI:
 
     def finish_comparison(self, output_path):
         """Open output file and close the app."""
-        os.startfile(output_path)
+        # Cross-platform file open
+        if platform.system() == 'Windows':
+            os.startfile(output_path)
+        elif platform.system() == 'Darwin':  # macOS
+            subprocess.run(['open', output_path])
+        else:  # Linux
+            subprocess.run(['xdg-open', output_path])
         self.root.quit()
 
     def handle_error(self, error_msg):
