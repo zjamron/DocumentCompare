@@ -38,6 +38,25 @@ class MoveCandidate:
     is_deletion: bool  # True if from original (deletion), False if from modified (insertion)
     word_count: int
 
+
+@dataclass
+class TableCell:
+    """Represents a table cell for comparison."""
+    text: str
+    row_idx: int
+    col_idx: int
+    row_span: int = 1
+    col_span: int = 1
+
+
+@dataclass
+class TableInfo:
+    """Represents a table extracted from a document."""
+    table_idx: int
+    rows: List[List[TableCell]]
+    row_count: int
+    col_count: int
+
 def get_paragraph_text(para):
     """Get plain text from a paragraph."""
     return para.text or ''
@@ -357,6 +376,221 @@ def align_paragraphs(orig_paras, mod_paras):
     alignments.reverse()
     return alignments
 
+
+# =============================================================================
+# TABLE COMPARISON FUNCTIONS
+# =============================================================================
+
+def extract_table_info(table, table_idx: int) -> TableInfo:
+    """Extract table structure and content from a Word table."""
+    rows = []
+    for row_idx, row in enumerate(table.rows):
+        row_cells = []
+        for col_idx, cell in enumerate(row.cells):
+            # Get cell text (join all paragraphs)
+            cell_text = '\n'.join(p.text for p in cell.paragraphs)
+            row_cells.append(TableCell(
+                text=cell_text,
+                row_idx=row_idx,
+                col_idx=col_idx
+            ))
+        rows.append(row_cells)
+
+    row_count = len(table.rows)
+    col_count = len(table.rows[0].cells) if table.rows else 0
+
+    return TableInfo(
+        table_idx=table_idx,
+        rows=rows,
+        row_count=row_count,
+        col_count=col_count
+    )
+
+
+def get_row_text(row_cells: List[TableCell]) -> str:
+    """Get combined text from a row for comparison."""
+    return ' | '.join(cell.text for cell in row_cells)
+
+
+def align_table_rows(orig_rows: List[List[TableCell]], mod_rows: List[List[TableCell]]) -> List[Tuple[int, int, str]]:
+    """Align rows between two tables using LCS algorithm."""
+    m, n = len(orig_rows), len(mod_rows)
+
+    # Build LCS table
+    lcs = [[0] * (n + 1) for _ in range(m + 1)]
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            orig_text = get_row_text(orig_rows[i-1])
+            mod_text = get_row_text(mod_rows[j-1])
+
+            if calculate_similarity(orig_text, mod_text) >= 0.4:
+                lcs[i][j] = lcs[i-1][j-1] + 1
+            else:
+                lcs[i][j] = max(lcs[i-1][j], lcs[i][j-1])
+
+    # Backtrack
+    alignments = []
+    i, j = m, n
+
+    while i > 0 or j > 0:
+        if i > 0 and j > 0:
+            orig_text = get_row_text(orig_rows[i-1])
+            mod_text = get_row_text(mod_rows[j-1])
+            if calculate_similarity(orig_text, mod_text) >= 0.4:
+                alignments.append((i-1, j-1, 'match'))
+                i -= 1
+                j -= 1
+                continue
+
+        if j > 0 and (i == 0 or lcs[i][j-1] >= lcs[i-1][j]):
+            alignments.append((-1, j-1, 'insert'))
+            j -= 1
+        else:
+            alignments.append((i-1, -1, 'delete'))
+            i -= 1
+
+    alignments.reverse()
+    return alignments
+
+
+def compare_table_cells(orig_table, out_table, stats):
+    """
+    Compare two tables cell by cell and apply diff formatting.
+
+    Args:
+        orig_table: Original table (from original document)
+        out_table: Output table (from modified document, will be modified in place)
+        stats: Dictionary to track change statistics
+    """
+    orig_info = extract_table_info(orig_table, 0)
+    out_info = extract_table_info(out_table, 0)
+
+    # Align rows
+    row_alignments = align_table_rows(orig_info.rows, out_info.rows)
+
+    for orig_row_idx, mod_row_idx, align_type in row_alignments:
+        if align_type == 'match' and orig_row_idx >= 0 and mod_row_idx >= 0:
+            orig_row = orig_info.rows[orig_row_idx]
+            out_row = out_table.rows[mod_row_idx]
+
+            # Compare each cell in the row
+            max_cols = max(len(orig_row), len(out_row.cells))
+
+            for col_idx in range(max_cols):
+                if col_idx < len(orig_row) and col_idx < len(out_row.cells):
+                    # Both cells exist - compare them
+                    orig_cell_text = orig_row[col_idx].text
+                    out_cell = out_row.cells[col_idx]
+                    out_cell_text = '\n'.join(p.text for p in out_cell.paragraphs)
+
+                    if orig_cell_text.strip() != out_cell_text.strip():
+                        # Cell content differs - apply diff
+                        compare_cell_content(orig_cell_text, out_cell, stats)
+                    else:
+                        stats['unchanged'] += len(out_cell_text.split())
+
+                elif col_idx < len(out_row.cells):
+                    # New column in modified - mark as inserted
+                    out_cell = out_row.cells[col_idx]
+                    mark_cell_as_inserted(out_cell, stats)
+
+        elif align_type == 'insert' and mod_row_idx >= 0:
+            # Entire row is new - mark all cells as inserted
+            out_row = out_table.rows[mod_row_idx]
+            for cell in out_row.cells:
+                mark_cell_as_inserted(cell, stats)
+
+        elif align_type == 'delete' and orig_row_idx >= 0:
+            # Row was deleted - we can't easily show this since we're using modified as base
+            # Count the deleted words
+            orig_row = orig_info.rows[orig_row_idx]
+            for cell in orig_row:
+                stats['deletions'] += len(cell.text.split())
+
+
+def compare_cell_content(orig_text: str, out_cell, stats):
+    """Compare cell content and apply diff formatting to the cell."""
+    # Get the cell's paragraphs
+    for para_idx, para in enumerate(out_cell.paragraphs):
+        # For simplicity, compare paragraph by paragraph
+        # Get corresponding original text (split by newlines)
+        orig_lines = orig_text.split('\n')
+        mod_text = para.text
+
+        if para_idx < len(orig_lines):
+            orig_para_text = orig_lines[para_idx]
+        else:
+            orig_para_text = ''
+
+        if orig_para_text.strip() != mod_text.strip():
+            # Get base formatting
+            base_formatting = get_first_run_formatting(para)
+
+            # Compute diff
+            diff_segments = diff_texts(orig_para_text, mod_text)
+
+            # Apply move detection
+            diff_segments = detect_word_level_moves(diff_segments)
+
+            # Count changes
+            for text, seg_type in diff_segments:
+                words = len(text.split())
+                if seg_type == 'insert':
+                    stats['insertions'] += words
+                elif seg_type == 'delete':
+                    stats['deletions'] += words
+                elif seg_type in ('move_source', 'move_dest'):
+                    stats['moves'] += words
+                else:
+                    stats['unchanged'] += words
+
+            # Rebuild paragraph with diff
+            rebuild_paragraph_with_diff(para, diff_segments, base_formatting)
+        else:
+            stats['unchanged'] += len(mod_text.split())
+
+
+def mark_cell_as_inserted(cell, stats):
+    """Mark all content in a cell as inserted (blue bold)."""
+    for para in cell.paragraphs:
+        text = para.text
+        if text.strip():
+            apply_formatting_to_existing_runs(para, 'insert')
+            stats['insertions'] += len(text.split())
+
+
+def mark_cell_as_deleted(cell, stats):
+    """Mark all content in a cell as deleted (red strikethrough)."""
+    for para in cell.paragraphs:
+        text = para.text
+        if text.strip():
+            apply_formatting_to_existing_runs(para, 'delete')
+            stats['deletions'] += len(text.split())
+
+
+def compare_tables_list(orig_tables, out_tables, stats):
+    """
+    Compare lists of tables between original and output documents.
+
+    Uses position-based matching (table 1 with table 1, etc.)
+    """
+    max_tables = max(len(orig_tables), len(out_tables))
+
+    for i in range(max_tables):
+        if i < len(orig_tables) and i < len(out_tables):
+            # Both tables exist - compare them
+            print(f"  Comparing table {i + 1}...")
+            compare_table_cells(orig_tables[i], out_tables[i], stats)
+        elif i < len(out_tables):
+            # New table in modified - mark all cells as inserted
+            print(f"  Table {i + 1} is new (marking as inserted)...")
+            out_table = out_tables[i]
+            for row in out_table.rows:
+                for cell in row.cells:
+                    mark_cell_as_inserted(cell, stats)
+
+
 def compare_paragraphs_list(orig_paras, out_paras, stats, context="", detect_moves_flag=True):
     """
     Compare two lists of paragraphs and apply diff formatting.
@@ -492,6 +726,15 @@ def compare_with_full_formatting(original_path, modified_path, output_path):
 
     print("Comparing body paragraphs...")
     compare_paragraphs_list(orig_paras, out_paras, stats, "body")
+
+    # Compare tables
+    orig_tables = list(original_doc.tables)
+    out_tables = list(output_doc.tables)
+
+    if orig_tables or out_tables:
+        print(f"Tables: {len(orig_tables)} original, {len(out_tables)} modified")
+        print("Comparing tables...")
+        compare_tables_list(orig_tables, out_tables, stats)
 
     # Compare headers and footers for each section
     orig_sections = list(original_doc.sections)

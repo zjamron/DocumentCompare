@@ -242,6 +242,154 @@ def extract_paragraphs_from_word(doc_path: str) -> List[Tuple[str, dict]]:
     return result
 
 
+def extract_tables_from_word(doc_path: str) -> List[List[List[str]]]:
+    """
+    Extract tables from Word document.
+    Returns list of tables, each table is a list of rows, each row is a list of cell texts.
+    """
+    doc = Document(doc_path)
+    tables = []
+    for table in doc.tables:
+        table_data = []
+        for row in table.rows:
+            row_data = []
+            for cell in row.cells:
+                cell_text = '\n'.join(p.text for p in cell.paragraphs)
+                row_data.append(cell_text)
+            table_data.append(row_data)
+        tables.append(table_data)
+    return tables
+
+
+def extract_tables_from_document(doc_path: str) -> List[List[List[str]]]:
+    """Extract tables from any supported document type."""
+    file_type = get_file_type(doc_path)
+
+    if file_type == 'word':
+        return extract_tables_from_word(doc_path)
+    elif file_type == 'pdf':
+        # PDF table extraction is complex - for now return empty
+        # Future: could use tabula-py or camelot
+        return []
+
+
+def compare_table_rows(orig_rows: List[List[str]], mod_rows: List[List[str]]) -> List[Tuple[int, int, str]]:
+    """Align rows between two tables using LCS algorithm."""
+    m, n = len(orig_rows), len(mod_rows)
+
+    def get_row_text(row):
+        return ' | '.join(row)
+
+    # Build LCS table
+    lcs = [[0] * (n + 1) for _ in range(m + 1)]
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            orig_text = get_row_text(orig_rows[i-1])
+            mod_text = get_row_text(mod_rows[j-1])
+
+            if calculate_similarity(orig_text, mod_text) >= 0.4:
+                lcs[i][j] = lcs[i-1][j-1] + 1
+            else:
+                lcs[i][j] = max(lcs[i-1][j], lcs[i][j-1])
+
+    # Backtrack
+    alignments = []
+    i, j = m, n
+
+    while i > 0 or j > 0:
+        if i > 0 and j > 0:
+            orig_text = get_row_text(orig_rows[i-1])
+            mod_text = get_row_text(mod_rows[j-1])
+            if calculate_similarity(orig_text, mod_text) >= 0.4:
+                alignments.append((i-1, j-1, 'match'))
+                i -= 1
+                j -= 1
+                continue
+
+        if j > 0 and (i == 0 or lcs[i][j-1] >= lcs[i-1][j]):
+            alignments.append((-1, j-1, 'insert'))
+            j -= 1
+        else:
+            alignments.append((i-1, -1, 'delete'))
+            i -= 1
+
+    alignments.reverse()
+    return alignments
+
+
+def diff_table(orig_table: List[List[str]], mod_table: List[List[str]], stats: dict) -> List[dict]:
+    """
+    Compare two tables and return diff results for each row.
+    """
+    results = []
+    row_alignments = compare_table_rows(orig_table, mod_table)
+
+    for orig_row_idx, mod_row_idx, align_type in row_alignments:
+        if align_type == 'match' and orig_row_idx >= 0 and mod_row_idx >= 0:
+            orig_row = orig_table[orig_row_idx]
+            mod_row = mod_table[mod_row_idx]
+
+            # Compare cells
+            row_segments = []
+            max_cols = max(len(orig_row), len(mod_row))
+
+            for col_idx in range(max_cols):
+                if col_idx < len(orig_row) and col_idx < len(mod_row):
+                    orig_cell = orig_row[col_idx]
+                    mod_cell = mod_row[col_idx]
+
+                    if orig_cell.strip() != mod_cell.strip():
+                        # Cell changed - compute diff
+                        cell_diff = diff_texts(orig_cell, mod_cell)
+                        cell_diff = detect_word_level_moves(cell_diff)
+
+                        for text, seg_type in cell_diff:
+                            words = len(text.split())
+                            if seg_type == 'insert':
+                                stats['insertions'] += words
+                            elif seg_type == 'delete':
+                                stats['deletions'] += words
+                            elif seg_type in ('move_source', 'move_dest'):
+                                stats['moves'] += words
+                            else:
+                                stats['unchanged'] += words
+
+                        row_segments.extend(cell_diff)
+                    else:
+                        row_segments.append((mod_cell, 'equal'))
+                        stats['unchanged'] += len(mod_cell.split())
+
+                    # Add cell separator
+                    if col_idx < max_cols - 1:
+                        row_segments.append((' | ', 'equal'))
+
+                elif col_idx < len(mod_row):
+                    # New column
+                    row_segments.append((mod_row[col_idx], 'insert'))
+                    stats['insertions'] += len(mod_row[col_idx].split())
+                    if col_idx < max_cols - 1:
+                        row_segments.append((' | ', 'equal'))
+
+            results.append({'segments': row_segments, 'is_heading': False, 'is_table_row': True})
+
+        elif align_type == 'insert' and mod_row_idx >= 0:
+            # New row
+            mod_row = mod_table[mod_row_idx]
+            row_text = ' | '.join(mod_row)
+            results.append({'segments': [(row_text, 'insert')], 'is_heading': False, 'is_table_row': True})
+            stats['insertions'] += len(row_text.split())
+
+        elif align_type == 'delete' and orig_row_idx >= 0:
+            # Deleted row
+            orig_row = orig_table[orig_row_idx]
+            row_text = ' | '.join(orig_row)
+            results.append({'segments': [(row_text, 'delete')], 'is_heading': False, 'is_table_row': True})
+            stats['deletions'] += len(row_text.split())
+
+    return results
+
+
 def extract_paragraphs_from_document(doc_path: str) -> List[Tuple[str, dict]]:
     """Extract paragraphs from any supported document type."""
     file_type = get_file_type(doc_path)
@@ -289,6 +437,14 @@ def compare_documents(
 
         print(f"  Original: {len(orig_paras)} paragraphs")
         print(f"  Modified: {len(mod_paras)} paragraphs")
+
+        # Extract tables
+        print("Extracting tables...")
+        orig_tables = extract_tables_from_document(original_path)
+        mod_tables = extract_tables_from_document(modified_path)
+
+        print(f"  Original: {len(orig_tables)} tables")
+        print(f"  Modified: {len(mod_tables)} tables")
 
         # Get just the text for alignment
         orig_texts = [text for text, _ in orig_paras]
@@ -398,6 +554,40 @@ def compare_documents(
                 'segments': result['segments'],
                 'is_heading': result.get('is_heading', False)
             })
+
+        # Compare tables
+        if orig_tables or mod_tables:
+            print("Comparing tables...")
+            max_tables = max(len(orig_tables), len(mod_tables))
+
+            for t_idx in range(max_tables):
+                if t_idx < len(orig_tables) and t_idx < len(mod_tables):
+                    # Both tables exist - compare them
+                    print(f"  Comparing table {t_idx + 1}...")
+                    table_results = diff_table(orig_tables[t_idx], mod_tables[t_idx], stats)
+                    diff_results.extend(table_results)
+                elif t_idx < len(mod_tables):
+                    # New table - mark all as inserted
+                    print(f"  Table {t_idx + 1} is new...")
+                    for row in mod_tables[t_idx]:
+                        row_text = ' | '.join(row)
+                        diff_results.append({
+                            'segments': [(row_text, 'insert')],
+                            'is_heading': False,
+                            'is_table_row': True
+                        })
+                        stats['insertions'] += len(row_text.split())
+                elif t_idx < len(orig_tables):
+                    # Deleted table - mark all as deleted
+                    print(f"  Table {t_idx + 1} was deleted...")
+                    for row in orig_tables[t_idx]:
+                        row_text = ' | '.join(row)
+                        diff_results.append({
+                            'segments': [(row_text, 'delete')],
+                            'is_heading': False,
+                            'is_table_row': True
+                        })
+                        stats['deletions'] += len(row_text.split())
 
         # Generate output
         print(f"Generating {output_format} output...")

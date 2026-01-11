@@ -16,6 +16,7 @@ A document comparison (redlining) library that compares two documents and genera
 - **Paragraph alignment** - Intelligently matches paragraphs between documents
 - **Header/footer comparison** - Compares headers and footers across document sections
 - **Move detection** - Detects text that was moved (not just deleted and re-inserted)
+- **Table comparison** - Cell-level comparison within tables, including row additions/deletions
 
 ## Quick Start (Python)
 
@@ -95,7 +96,14 @@ DocumentCompare/
 - [x] **Phase 1**: Word-to-Word comparison with formatting preservation
 - [x] **Phase 2**: PDF support (input and output)
 - [x] **Phase 3**: Move detection (green highlighting)
-- [ ] **Phase 4**: Table cell-level comparison
+- [x] **Phase 4**: Table cell-level comparison
+
+## Future Enhancements
+
+- Image comparison
+- OCR support for scanned PDFs
+- HTML output format
+- Performance optimization for large documents (100+ pages)
 
 ## Dependencies
 
