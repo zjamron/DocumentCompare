@@ -15,9 +15,11 @@ from typing import List, Optional, Tuple
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.colors import red, blue, black, green
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+from datetime import datetime
 
 
 @dataclass
@@ -153,12 +155,16 @@ class PdfGenerator:
             spaceBefore=12
         ))
 
-    def generate_redline(self, diff_paragraphs: List[dict]):
+    def generate_redline(self, diff_paragraphs: List[dict], stats: dict = None,
+                         original_name: str = "", modified_name: str = ""):
         """
-        Generate a redlined PDF from diff results.
+        Generate a redlined PDF from diff results with Litera-style formatting.
 
         diff_paragraphs: List of dicts with 'segments' key containing
                         list of (text, type) tuples where type is 'equal', 'delete', or 'insert'
+        stats: Statistics dictionary for summary page
+        original_name: Original filename for summary
+        modified_name: Modified filename for summary
         """
         doc = SimpleDocTemplate(
             self.output_path,
@@ -188,24 +194,24 @@ class PdfGenerator:
                 escaped_text = self._escape_xml(text)
 
                 if seg_type == 'delete':
-                    # Red strikethrough
+                    # Red strikethrough (unchanged)
                     formatted_parts.append(
                         f'<font color="red"><strike>{escaped_text}</strike></font>'
                     )
                 elif seg_type == 'insert':
-                    # Blue bold
+                    # Blue bold for insertions
                     formatted_parts.append(
                         f'<font color="blue"><b>{escaped_text}</b></font>'
                     )
                 elif seg_type == 'move_source':
-                    # Green strikethrough (moved from here)
+                    # Green strikethrough (moved from here) - unchanged
                     formatted_parts.append(
                         f'<font color="green"><strike>{escaped_text}</strike></font>'
                     )
                 elif seg_type == 'move_dest':
-                    # Green (moved to here)
+                    # Green with underline (moved to here)
                     formatted_parts.append(
-                        f'<font color="green">{escaped_text}</font>'
+                        f'<font color="green"><u>{escaped_text}</u></font>'
                     )
                 else:
                     # Normal
@@ -223,11 +229,79 @@ class PdfGenerator:
                         text for text, _ in segments if text
                     )), self.styles['Normal_Custom']))
 
+        # Add summary page if stats provided
+        if stats:
+            story.append(PageBreak())
+            story.extend(self._generate_summary_page(stats, original_name, modified_name))
+
         if story:
             doc.build(story)
         else:
             # Create empty document with message
             doc.build([Paragraph("No differences found.", self.styles['Normal_Custom'])])
+
+    def _generate_summary_page(self, stats: dict, original_name: str, modified_name: str) -> List:
+        """Generate Litera-style summary report elements for PDF."""
+        elements = []
+
+        # Build table data
+        data = [
+            ["Summary report:", ""],
+            ["Document Compare for Word Document comparison done on", ""],
+            [datetime.now().strftime("%m/%d/%Y %I:%M:%S %p"), ""],
+            ["Style name:", "CSM"],
+            ["Intelligent Table Comparison:", "Active"],
+            ["Original filename:", original_name],
+            ["Modified filename:", modified_name],
+            ["Changes:", ""],
+            ["Add", str(stats.get('insertions', 0))],
+            ["Delete", str(stats.get('deletions', 0))],
+            ["Move From", str(stats.get('move_from', 0))],
+            ["Move To", str(stats.get('move_to', 0))],
+            ["Table Insert", str(stats.get('table_insertions', 0))],
+            ["Table Delete", str(stats.get('table_deletions', 0))],
+            ["Table moves to", str(stats.get('table_moves_to', 0))],
+            ["Table moves from", str(stats.get('table_moves_from', 0))],
+            ["Embedded Graphics (Visio, ChemDraw, Images etc.)", str(stats.get('embedded_graphics', 0))],
+            ["Embedded Excel", str(stats.get('embedded_excel', 0))],
+            ["Format changes", str(stats.get('format_changes', 0))],
+        ]
+
+        # Calculate total
+        total = (stats.get('insertions', 0) + stats.get('deletions', 0) +
+                 stats.get('move_from', 0) + stats.get('move_to', 0) +
+                 stats.get('table_insertions', 0) + stats.get('table_deletions', 0) +
+                 stats.get('table_moves_to', 0) + stats.get('table_moves_from', 0))
+        data.append(["Total Changes:", str(total)])
+
+        # Create table
+        table = Table(data, colWidths=[350, 80])
+
+        # Style the table
+        style = TableStyle([
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),  # Summary report bold
+            ('SPAN', (0, 0), (1, 0)),  # Merge header cells
+            ('SPAN', (0, 1), (1, 1)),  # Merge second row
+            ('SPAN', (0, 2), (1, 2)),  # Merge third row
+            ('SPAN', (0, 7), (1, 7)),  # Merge Changes row
+            ('FONTNAME', (0, 7), (0, 7), 'Helvetica-Bold'),  # Changes bold
+            ('FONTNAME', (0, -1), (0, -1), 'Helvetica-Bold'),  # Total bold
+            # Color formatting for change rows
+            ('TEXTCOLOR', (0, 8), (0, 8), colors.blue),    # Add
+            ('TEXTCOLOR', (0, 9), (0, 9), colors.red),     # Delete
+            ('TEXTCOLOR', (0, 10), (0, 10), colors.green), # Move From
+            ('TEXTCOLOR', (0, 11), (0, 11), colors.green), # Move To
+            ('TEXTCOLOR', (0, 12), (0, 12), colors.green), # Table Insert
+            ('TEXTCOLOR', (0, 13), (0, 13), colors.red),   # Table Delete
+            ('TEXTCOLOR', (0, 14), (0, 14), colors.green), # Table moves to
+            ('TEXTCOLOR', (0, 15), (0, 15), colors.green), # Table moves from
+        ])
+        table.setStyle(style)
+
+        elements.append(table)
+        return elements
 
     def _escape_xml(self, text: str) -> str:
         """Escape special XML characters for ReportLab."""

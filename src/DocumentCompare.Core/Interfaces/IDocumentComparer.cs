@@ -106,12 +106,12 @@ public class RedlineStyles
     public string DeletionColor { get; set; } = "FF0000";
 
     /// <summary>
-    /// Color for inserted text.
+    /// Color for inserted text (blue).
     /// </summary>
     public string InsertionColor { get; set; } = "0000FF";
 
     /// <summary>
-    /// Color for moved text.
+    /// Color for moved text (green).
     /// </summary>
     public string MoveColor { get; set; } = "008000";
 
@@ -227,6 +227,60 @@ public class CompareStatistics
     /// Number of unchanged words/segments.
     /// </summary>
     public int Unchanged { get; set; }
+
+    // Litera-style detailed statistics
+
+    /// <summary>
+    /// Number of move source locations (moved from).
+    /// </summary>
+    public int MoveFromCount { get; set; }
+
+    /// <summary>
+    /// Number of move destination locations (moved to).
+    /// </summary>
+    public int MoveToCount { get; set; }
+
+    /// <summary>
+    /// Number of table row/cell insertions.
+    /// </summary>
+    public int TableInsertions { get; set; }
+
+    /// <summary>
+    /// Number of table row/cell deletions.
+    /// </summary>
+    public int TableDeletions { get; set; }
+
+    /// <summary>
+    /// Number of table content moved to locations.
+    /// </summary>
+    public int TableMovesTo { get; set; }
+
+    /// <summary>
+    /// Number of table content moved from locations.
+    /// </summary>
+    public int TableMovesFrom { get; set; }
+
+    /// <summary>
+    /// Number of embedded graphics changes.
+    /// </summary>
+    public int EmbeddedGraphics { get; set; }
+
+    /// <summary>
+    /// Number of embedded Excel changes.
+    /// </summary>
+    public int EmbeddedExcel { get; set; }
+
+    /// <summary>
+    /// Number of format-only changes.
+    /// </summary>
+    public int FormatChanges { get; set; }
+
+    /// <summary>
+    /// Total count of all changes for Litera-style summary.
+    /// </summary>
+    public int TotalChanges => Insertions + Deletions + MoveFromCount + MoveToCount +
+        TableInsertions + TableDeletions + TableMovesTo + TableMovesFrom +
+        EmbeddedGraphics + EmbeddedExcel + FormatChanges;
 
     /// <summary>
     /// Percentage of content that changed.

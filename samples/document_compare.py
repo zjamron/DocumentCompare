@@ -23,7 +23,9 @@ MIN_MOVE_WORDS = 3
 
 # Import Word support
 from docx import Document
-from docx.shared import RGBColor
+from docx.shared import RGBColor, Pt, Inches
+from docx.enum.text import WD_UNDERLINE
+from datetime import datetime
 
 # Import PDF support
 from pdf_support import (
@@ -230,8 +232,37 @@ def align_paragraphs(orig_texts: List[str], mod_texts: List[str]) -> List[Tuple[
     return alignments
 
 
+def extract_footnotes_from_word(doc_path: str) -> List[Tuple[str, dict]]:
+    """Extract footnotes from Word document."""
+    from lxml import etree
+    from zipfile import ZipFile
+
+    footnotes = []
+    try:
+        with ZipFile(doc_path, 'r') as zip_file:
+            if 'word/footnotes.xml' in zip_file.namelist():
+                footnotes_xml = zip_file.read('word/footnotes.xml')
+                root = etree.fromstring(footnotes_xml)
+                ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+                for fn in root.findall('.//w:footnote', ns):
+                    fn_id = fn.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
+                    # Skip separator footnotes (id -1 and 0)
+                    if fn_id in ['-1', '0']:
+                        continue
+
+                    text_parts = fn.findall('.//w:t', ns)
+                    text = ''.join([t.text or '' for t in text_parts])
+                    if text.strip():
+                        footnotes.append((text, {'is_heading': False, 'is_footnote': True, 'footnote_id': fn_id}))
+    except Exception as e:
+        print(f"  Warning: Could not extract footnotes: {e}")
+
+    return footnotes
+
+
 def extract_paragraphs_from_word(doc_path: str) -> List[Tuple[str, dict]]:
-    """Extract paragraphs from Word document with metadata."""
+    """Extract paragraphs from Word document with metadata, including footnotes."""
     doc = Document(doc_path)
     result = []
     for para in doc.paragraphs:
@@ -239,6 +270,14 @@ def extract_paragraphs_from_word(doc_path: str) -> List[Tuple[str, dict]]:
             'is_heading': para.style.name.startswith('Heading') if para.style else False
         }
         result.append((para.text, metadata))
+
+    # Also extract footnotes
+    footnotes = extract_footnotes_from_word(doc_path)
+    if footnotes:
+        # Add a separator before footnotes
+        result.append(("--- Footnotes ---", {'is_heading': True, 'is_footnote_header': True}))
+        result.extend(footnotes)
+
     return result
 
 
@@ -457,7 +496,21 @@ def compare_documents(
         # Compute diffs
         print("Computing differences...")
         diff_results = []
-        stats = {'insertions': 0, 'deletions': 0, 'moves': 0, 'unchanged': 0}
+        stats = {
+            'insertions': 0,
+            'deletions': 0,
+            'moves': 0,
+            'unchanged': 0,
+            'move_from': 0,
+            'move_to': 0,
+            'table_insertions': 0,
+            'table_deletions': 0,
+            'table_moves_to': 0,
+            'table_moves_from': 0,
+            'embedded_graphics': 0,
+            'embedded_excel': 0,
+            'format_changes': 0
+        }
 
         # First pass: collect all diffs
         temp_results = []
@@ -545,8 +598,12 @@ def compare_documents(
                     stats['insertions'] += words
                 elif seg_type == 'delete':
                     stats['deletions'] += words
-                elif seg_type in ('move_source', 'move_dest'):
+                elif seg_type == 'move_source':
                     stats['moves'] += words
+                    stats['move_from'] += words
+                elif seg_type == 'move_dest':
+                    stats['moves'] += words
+                    stats['move_to'] += words
                 else:
                     stats['unchanged'] += words
 
@@ -592,10 +649,13 @@ def compare_documents(
         # Generate output
         print(f"Generating {output_format} output...")
 
+        original_name = os.path.basename(original_path)
+        modified_name = os.path.basename(modified_path)
+
         if output_format == 'pdf':
-            generate_pdf_redline(diff_results, output_path)
+            generate_pdf_redline(diff_results, output_path, stats, original_name, modified_name)
         else:  # word
-            generate_word_redline(diff_results, output_path, modified_path)
+            generate_word_redline(diff_results, output_path, modified_path, original_path, stats, original_name, modified_name)
 
         print(f"\nOutput saved to: {output_path}")
 
@@ -622,47 +682,143 @@ def compare_documents(
         )
 
 
-def generate_pdf_redline(diff_results: List[dict], output_path: str):
-    """Generate a redlined PDF document."""
+def generate_pdf_redline(diff_results: List[dict], output_path: str, stats: dict = None,
+                         original_name: str = "", modified_name: str = ""):
+    """Generate a redlined PDF document with Litera-style formatting."""
     generator = PdfGenerator(output_path)
-    generator.generate_redline(diff_results)
+    generator.generate_redline(diff_results, stats, original_name, modified_name)
 
 
-def generate_word_redline(diff_results: List[dict], output_path: str, base_doc_path: Optional[str] = None):
-    """Generate a redlined Word document."""
-    doc = Document()
+def generate_word_redline(diff_results: List[dict], output_path: str, modified_path: str,
+                          original_path: str, stats: dict = None, original_name: str = "",
+                          modified_name: str = ""):
+    """
+    Generate a redlined Word document with Litera-style formatting.
 
-    for para_info in diff_results:
-        segments = para_info.get('segments', [])
-        is_heading = para_info.get('is_heading', False)
+    NEW APPROACH: Uses XML-level manipulation to preserve document structure.
+    The modified document is copied as the base, and redline markup is applied
+    directly to the XML, preserving all headers, footers, styles, tables, etc.
+    """
+    from xml_redline_generator import XmlRedlineGenerator
 
-        if not segments:
-            continue
+    # Generate redline using XML manipulation (preserves document structure)
+    generator = XmlRedlineGenerator(modified_path, original_path, output_path)
+    xml_stats = generator.generate()
 
-        if is_heading:
-            para = doc.add_heading('', level=1)
-        else:
-            para = doc.add_paragraph()
+    # Update stats with results from XML generator
+    if stats:
+        stats.update(xml_stats)
 
-        for text, seg_type in segments:
-            if not text:
-                continue
+    # Add summary page at the end using python-docx
+    if stats:
+        add_summary_page_to_file(output_path, stats, original_name, modified_name)
 
-            run = para.add_run(text)
 
-            if seg_type == 'delete':
-                run.font.strike = True
-                run.font.color.rgb = RGBColor(255, 0, 0)  # Red
-            elif seg_type == 'insert':
-                run.bold = True
-                run.font.color.rgb = RGBColor(0, 0, 255)  # Blue
-            elif seg_type == 'move_source':
-                run.font.strike = True
-                run.font.color.rgb = RGBColor(0, 128, 0)  # Green
-            elif seg_type == 'move_dest':
-                run.font.color.rgb = RGBColor(0, 128, 0)  # Green
-
+def add_summary_page_to_file(output_path: str, stats: dict, original_name: str, modified_name: str):
+    """Add summary page to an existing Word document file."""
+    doc = Document(output_path)
+    add_summary_page(doc, stats, original_name, modified_name)
     doc.save(output_path)
+
+
+def add_summary_page(doc: Document, stats: dict, original_name: str, modified_name: str):
+    """Add Litera-style summary report page at the end of the document."""
+    # Add page break
+    doc.add_page_break()
+
+    # Create summary table
+    table = doc.add_table(rows=0, cols=2)
+    table.style = 'Table Grid'
+
+    # Header: Summary report
+    row = table.add_row()
+    cell = row.cells[0]
+    cell.merge(row.cells[1])
+    p = cell.paragraphs[0]
+    run = p.add_run("Summary report:")
+    run.bold = True
+
+    # Document Compare info
+    row = table.add_row()
+    cell = row.cells[0]
+    cell.merge(row.cells[1])
+    p = cell.paragraphs[0]
+    p.add_run("Document Compare for Word Document comparison done on")
+
+    row = table.add_row()
+    cell = row.cells[0]
+    cell.merge(row.cells[1])
+    p = cell.paragraphs[0]
+    p.add_run(datetime.now().strftime("%m/%d/%Y %I:%M:%S %p"))
+
+    # Metadata
+    add_summary_row(table, "Style name:", "CSM")
+    add_summary_row(table, "Intelligent Table Comparison:", "Active")
+    add_summary_row(table, "Original filename:", original_name)
+    add_summary_row(table, "Modified filename:", modified_name)
+
+    # Changes header
+    row = table.add_row()
+    cell = row.cells[0]
+    cell.merge(row.cells[1])
+    p = cell.paragraphs[0]
+    run = p.add_run("Changes:")
+    run.bold = True
+
+    # Change counts with formatting
+    add_formatted_change_row(table, "Add", stats.get('insertions', 0),
+                            RGBColor(0, 0, 255), False, WD_UNDERLINE.SINGLE)
+    add_formatted_change_row(table, "Delete", stats.get('deletions', 0),
+                            RGBColor(255, 0, 0), True, None)
+    add_formatted_change_row(table, "Move From", stats.get('move_from', 0),
+                            RGBColor(0, 128, 0), True, None)
+    add_formatted_change_row(table, "Move To", stats.get('move_to', 0),
+                            RGBColor(0, 128, 0), False, WD_UNDERLINE.SINGLE)
+    add_formatted_change_row(table, "Table Insert", stats.get('table_insertions', 0),
+                            RGBColor(0, 128, 0), False, WD_UNDERLINE.SINGLE)
+    add_formatted_change_row(table, "Table Delete", stats.get('table_deletions', 0),
+                            RGBColor(255, 0, 0), True, None)
+    add_formatted_change_row(table, "Table moves to", stats.get('table_moves_to', 0),
+                            RGBColor(0, 128, 0), False, WD_UNDERLINE.SINGLE)
+    add_formatted_change_row(table, "Table moves from", stats.get('table_moves_from', 0),
+                            RGBColor(0, 128, 0), True, None)
+    add_summary_row(table, "Embedded Graphics (Visio, ChemDraw, Images etc.)",
+                   str(stats.get('embedded_graphics', 0)))
+    add_summary_row(table, "Embedded Excel", str(stats.get('embedded_excel', 0)))
+    add_summary_row(table, "Format changes", str(stats.get('format_changes', 0)))
+
+    # Total
+    total = (stats.get('insertions', 0) + stats.get('deletions', 0) +
+             stats.get('move_from', 0) + stats.get('move_to', 0) +
+             stats.get('table_insertions', 0) + stats.get('table_deletions', 0) +
+             stats.get('table_moves_to', 0) + stats.get('table_moves_from', 0))
+    row = table.add_row()
+    run = row.cells[0].paragraphs[0].add_run("Total Changes:")
+    run.bold = True
+    row.cells[1].paragraphs[0].add_run(str(total))
+
+
+def add_summary_row(table, label: str, value: str):
+    """Add a simple row to the summary table."""
+    row = table.add_row()
+    row.cells[0].paragraphs[0].add_run(label)
+    row.cells[1].paragraphs[0].add_run(value)
+
+
+def add_formatted_change_row(table, label: str, count: int, color, strikethrough: bool, underline):
+    """Add a formatted change row to the summary table."""
+    row = table.add_row()
+
+    # Label with formatting
+    run = row.cells[0].paragraphs[0].add_run(label)
+    run.font.color.rgb = color
+    if strikethrough:
+        run.font.strike = True
+    if underline:
+        run.font.underline = underline
+
+    # Count
+    row.cells[1].paragraphs[0].add_run(str(count))
 
 
 def main():

@@ -292,7 +292,10 @@ public class WordGenerator : IDocumentGenerator
         if (formatting.Italic)
             props.Italic = new Italic();
 
-        if (formatting.Underline)
+        // Handle both single and double underline (Litera-style for insertions)
+        if (formatting.DoubleUnderline)
+            props.Underline = new Underline { Val = UnderlineValues.Double };
+        else if (formatting.Underline)
             props.Underline = new Underline { Val = UnderlineValues.Single };
 
         if (formatting.Strikethrough)
@@ -497,7 +500,10 @@ public class WordGenerator : IDocumentGenerator
         if (formatting.Italic)
             props.Italic = new Italic();
 
-        if (formatting.Underline)
+        // Handle both single and double underline (Litera-style for insertions)
+        if (formatting.DoubleUnderline)
+            props.Underline = new Underline { Val = UnderlineValues.Double };
+        else if (formatting.Underline)
             props.Underline = new Underline { Val = UnderlineValues.Single };
 
         if (formatting.Strikethrough)

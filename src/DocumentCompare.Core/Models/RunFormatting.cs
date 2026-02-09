@@ -8,6 +8,7 @@ public class RunFormatting
     public bool Bold { get; set; }
     public bool Italic { get; set; }
     public bool Underline { get; set; }
+    public bool DoubleUnderline { get; set; }  // For Litera-style insertions
     public bool Strikethrough { get; set; }
     public string? FontFamily { get; set; }
     public double? FontSize { get; set; }
@@ -31,6 +32,7 @@ public class RunFormatting
             Bold = Bold,
             Italic = Italic,
             Underline = Underline,
+            DoubleUnderline = DoubleUnderline,
             Strikethrough = Strikethrough,
             FontFamily = FontFamily,
             FontSize = FontSize,
@@ -54,7 +56,7 @@ public class RunFormatting
     }
 
     /// <summary>
-    /// Creates formatting for inserted text (bold blue).
+    /// Creates formatting for inserted text (blue bold).
     /// </summary>
     public static RunFormatting ForInsertion(RunFormatting? original = null)
     {
@@ -74,6 +76,10 @@ public class RunFormatting
         if (isSource)
         {
             formatting.Strikethrough = true;
+        }
+        else
+        {
+            formatting.Underline = true;  // Underline for move destination
         }
         return formatting;
     }
