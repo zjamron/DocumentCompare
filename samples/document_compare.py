@@ -721,6 +721,22 @@ def add_summary_page_to_file(output_path: str, stats: dict, original_name: str, 
     doc.save(output_path)
 
 
+def _add_table_borders(table):
+    """Give a table single-line borders without relying on a named style."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    tbl_pr = table._tbl.tblPr
+    borders = OxmlElement('w:tblBorders')
+    for edge in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
+        el = OxmlElement(f'w:{edge}')
+        el.set(qn('w:val'), 'single')
+        el.set(qn('w:sz'), '4')
+        el.set(qn('w:space'), '0')
+        el.set(qn('w:color'), 'auto')
+        borders.append(el)
+    tbl_pr.append(borders)
+
+
 def add_summary_page(doc: Document, stats: dict, original_name: str, modified_name: str):
     """Add Litera-style summary report page at the end of the document."""
     # Add page break
@@ -728,7 +744,12 @@ def add_summary_page(doc: Document, stats: dict, original_name: str, modified_na
 
     # Create summary table
     table = doc.add_table(rows=0, cols=2)
-    table.style = 'Table Grid'
+    # Real-world documents often don't define the built-in "Table Grid" style;
+    # fall back to explicit cell borders instead of failing the whole comparison
+    try:
+        table.style = 'Table Grid'
+    except KeyError:
+        _add_table_borders(table)
 
     # Header: Summary report
     row = table.add_row()
