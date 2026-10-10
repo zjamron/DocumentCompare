@@ -19,6 +19,7 @@ setup(
         "pdf_support",
         "compare_preserve_formatting",
         "xml_redline_generator",
+        "paragraph_alignment",
     ],
     package_dir={"": "samples"},
     classifiers=[

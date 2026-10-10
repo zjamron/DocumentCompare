@@ -196,40 +196,9 @@ def detect_word_level_moves(diff_segments: List[Tuple[str, str]]) -> List[Tuple[
 
 
 def align_paragraphs(orig_texts: List[str], mod_texts: List[str]) -> List[Tuple[int, int, str]]:
-    """Align paragraphs using LCS algorithm."""
-    m, n = len(orig_texts), len(mod_texts)
-
-    # Build LCS table
-    lcs = [[0] * (n + 1) for _ in range(m + 1)]
-
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if calculate_similarity(orig_texts[i-1], mod_texts[j-1]) >= 0.4:
-                lcs[i][j] = lcs[i-1][j-1] + 1
-            else:
-                lcs[i][j] = max(lcs[i-1][j], lcs[i][j-1])
-
-    # Backtrack
-    alignments = []
-    i, j = m, n
-
-    while i > 0 or j > 0:
-        if i > 0 and j > 0:
-            if calculate_similarity(orig_texts[i-1], mod_texts[j-1]) >= 0.4:
-                alignments.append((i-1, j-1, 'match'))
-                i -= 1
-                j -= 1
-                continue
-
-        if j > 0 and (i == 0 or lcs[i][j-1] >= lcs[i-1][j]):
-            alignments.append((-1, j-1, 'insert'))
-            j -= 1
-        else:
-            alignments.append((i-1, -1, 'delete'))
-            i -= 1
-
-    alignments.reverse()
-    return alignments
+    """Align paragraphs (exact-match anchors, then similarity LCS in the gaps)."""
+    from paragraph_alignment import align_paragraphs as _fast_align
+    return _fast_align(orig_texts, mod_texts)
 
 
 def extract_footnotes_from_word(doc_path: str) -> List[Tuple[str, dict]]:

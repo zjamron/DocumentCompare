@@ -255,43 +255,14 @@ class XmlRedlineGenerator:
             Dict mapping mod_para_idx -> (orig_para_idx or None, alignment_type)
             alignment_type is 'match' or 'insert'
         """
-        m, n = len(orig_texts), len(mod_texts)
+        from paragraph_alignment import align_paragraphs as _fast_align
 
-        if m == 0:
-            # All paragraphs are new
-            return {j: (None, 'insert') for j in range(n)}
-
-        if n == 0:
-            return {}
-
-        # Build LCS table for alignment
-        lcs = [[0] * (n + 1) for _ in range(m + 1)]
-
-        for i in range(1, m + 1):
-            for j in range(1, n + 1):
-                if self._calculate_similarity(orig_texts[i-1], mod_texts[j-1]) >= 0.4:
-                    lcs[i][j] = lcs[i-1][j-1] + 1
-                else:
-                    lcs[i][j] = max(lcs[i-1][j], lcs[i][j-1])
-
-        # Backtrack to find alignment
         alignments = {}
-        i, j = m, n
-
-        while i > 0 or j > 0:
-            if i > 0 and j > 0:
-                if self._calculate_similarity(orig_texts[i-1], mod_texts[j-1]) >= 0.4:
-                    alignments[j-1] = (i-1, 'match')
-                    i -= 1
-                    j -= 1
-                    continue
-
-            if j > 0 and (i == 0 or lcs[i][j-1] >= lcs[i-1][j]):
-                alignments[j-1] = (None, 'insert')
-                j -= 1
-            else:
-                i -= 1
-
+        for orig_idx, mod_idx, kind in _fast_align(orig_texts, mod_texts):
+            if kind == 'match':
+                alignments[mod_idx] = (orig_idx, 'match')
+            elif kind == 'insert':
+                alignments[mod_idx] = (None, 'insert')
         return alignments
 
     def _calculate_similarity(self, text1: str, text2: str) -> float:
