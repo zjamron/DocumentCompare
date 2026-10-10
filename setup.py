@@ -17,7 +17,8 @@ setup(
     py_modules=[
         "document_compare",
         "pdf_support",
-        "compare_preserve_formatting"
+        "compare_preserve_formatting",
+        "xml_redline_generator",
     ],
     package_dir={"": "samples"},
     classifiers=[
